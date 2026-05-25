@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Literal, Sequence, Tuple
 
 import math
-
+import networkx as nx
+import community as community_louvain 
+from collections import defaultdict
 
 Edge = Tuple[Any, Any]
 
@@ -72,3 +74,29 @@ def evaluate_link_prediction(
 		ap=float(average_precision_score(y_true, y_score)),
 	)
 
+def evaluate_network_topology(G, partition=None):
+    """Tính toán các chỉ số cấu trúc mạng lưới phục vụ cho báo cáo đồ án."""
+    results = {}
+
+    print("[INFO] Đang tính toán Average Clustering Coefficient...")
+    results["avg_clustering"] = nx.average_clustering(G)
+
+    # Tính chỉ số Modularity bằng NetworkX 
+    if partition is not None:
+        print("[INFO] Đang tính toán Modularity Score bằng NetworkX...")
+        community_dict = defaultdict(set)
+        for node, com_id in partition.items():
+            community_dict[com_id].add(node)
+        communities_list = list(community_dict.values())
+        try:
+            results["modularity"] = nx.community.modularity(G, communities_list)
+        except AttributeError:
+            # Phòng trường hợp dùng bản NetworkX cũ hơn
+            import networkx.algorithms.community as nx_comm
+            results["modularity"] = nx_comm.modularity(G, communities_list)
+    else:
+        print("[WARNING] Không có dữ liệu phân cụm để tính Modularity.")
+        results["modularity"] = None
+
+    print("[INFO] Hoàn thành đánh giá mạng lưới!")
+    return results
