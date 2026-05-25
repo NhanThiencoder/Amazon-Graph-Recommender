@@ -44,6 +44,51 @@ def predict_links(G, candidate_pairs):
     
     return df_predictions
 
+
+def predict_links_with_explanations(
+    G: nx.Graph,
+    candidate_pairs,
+    *,
+    max_common_neighbors: int = 10,
+):
+    """Like `predict_links` but adds lightweight explainable signals.
+
+    This keeps the project dependency-light (only networkx/pandas) and produces
+    columns that are easy to narrate in an Explainable AI section.
+    """
+
+    try:
+        # Preferred when project root is on PYTHONPATH
+        from src.explainability import explain_pair
+    except Exception:
+        # Fallback when imported as a package module
+        from .explainability import explain_pair
+
+    df = predict_links(G, candidate_pairs)
+    common_counts = []
+    same_community = []
+    shortest_path_len = []
+
+    for _, row in df.iterrows():
+        u = row["Product_A"]
+        v = row["Product_B"]
+        # We treat Adamic-Adar as a convenient default score to explain.
+        exp = explain_pair(
+            G,
+            u,
+            v,
+            score=float(row.get("Adamic_Adar_Score", 0.0)),
+            max_common_neighbors=max_common_neighbors,
+        )
+        common_counts.append(exp.signals.get("common_neighbors_count", 0))
+        same_community.append(exp.signals.get("same_community", False))
+        shortest_path_len.append(exp.signals.get("shortest_path_len"))
+
+    df["Common_Neighbors_Count"] = common_counts
+    df["Same_Community"] = same_community
+    df["Shortest_Path_Len"] = shortest_path_len
+    return df
+
 def generate_candidate_pairs(G, num_samples=10000):
     """
     Hàm tiện ích: Sinh ra một lượng nhỏ các cặp tiềm năng (khoảng cách = 2) để test

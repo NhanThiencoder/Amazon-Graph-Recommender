@@ -1,0 +1,10 @@
+
+pandas>=2.0
+networkx>=3.0
+numpy>=1.24
+matplotlib>=3.7
+seaborn>=0.13
+
+# Baseline embedding model (PyTorch) + evaluation
+torch>=2.0
+scikit-learn>=1.3
