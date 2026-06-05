@@ -41,10 +41,15 @@ def fit_node2vec_torch(
     data = np.ones(len(rows), dtype=np.float32)
     A = sp.csr_matrix((data, (rows, cols)), shape=(n, n))
 
-    # SVD rút gọn → lấy k chiều đầu làm embedding
+    #SVD rút gọn → lấy k chiều đầu làm embedding
     k = min(config.dimensions, n - 1)
-    np.random.seed(config.seed)
-    U, S, _ = spla.svds(A, k=k, random_state=config.seed)
+    
+    # FIX LỖI XUNG ĐỘT NUMPY 2.0: Tự tạo vector v0
+    rng = np.random.default_rng(config.seed)
+    v0_init = rng.random(A.shape[0]) 
+    
+    # TRUYỀN v0 VÀO, XÓA random_state
+    U, S, _ = spla.svds(A, k=k, v0=v0_init)
 
     # Nhân với căn bậc hai singular values để scale đúng
     embeddings_matrix = U * np.sqrt(S)

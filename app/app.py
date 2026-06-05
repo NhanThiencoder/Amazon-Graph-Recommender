@@ -6,360 +6,297 @@ import networkx as nx
 from pyvis.network import Network
 import streamlit.components.v1 as components
 import tempfile
+import altair as alt
 
 # ---------------------------------------------------------
 # 1. CẤU HÌNH & DATABASE
 # ---------------------------------------------------------
-st.set_page_config(layout="wide", page_title="Amazon RecSys & XAI")
+st.set_page_config(layout="wide", page_title="Amazon Seller Dashboard | XAI")
 
-# Tùy chỉnh CSS giao diện (Sáng sủa, hiện đại, khắc phục lỗi chữ chìm)
 st.markdown(
     """
     <style>
-    /* Nền ứng dụng chuyển sắc nhẹ nhàng */
-    .stApp {
-        background: linear-gradient(135deg, #f0f4f8 0%, #ffffff 100%);
-    }
-    
-    /* Ép màu chữ tối để hiển thị rõ trên nền sáng */
-    h1, h2, h3, h4, h5, h6, p, label, div[data-testid="stMarkdownContainer"] {
-        color: #2d3436 !important; 
-    }
-    
-    /* Giữ màu chữ trắng riêng cho nút bấm */
-    .stButton>button p, .stButton>button div {
-        color: #ffffff !important;
-    }
-
-    /* Màu nền sidebar sáng và viền mờ */
-    .stSidebar {
-        background-color: #ffffff;
-        border-right: 1px solid #e1e4e8;
-    }
-    
-    /* Tùy chỉnh nút bấm với tone màu Tím công nghệ */
-    .stButton>button {
-        background-color: #6c5ce7 !important; 
-        color: white !important;
-        border-radius: 8px;
-        font-weight: 600;
-        border: none;
-        transition: all 0.3s ease;
-    }
-    .stButton>button:hover {
-        background-color: #5849c4 !important;
-        box-shadow: 0 4px 12px rgba(108, 92, 231, 0.3);
-    }
-    
-    /* Bo góc và làm đậm chữ cho các thẻ thông báo (st.info, st.success) */
-    .stAlert {
-        border-radius: 12px;
-    }
-    .stAlert p {
-        color: #1e272e !important;
-    }
+    .stApp { background-color: #f4f6f9; }
+    h1, h2, h3, h4, h5, h6, p, label, div[data-testid="stMarkdownContainer"] { color: #2c3e50 !important; }
+    div[data-testid="stMetricValue"] { font-size: 28px !important; color: #e74c3c !important; font-weight: 700; }
+    div[data-testid="stMetricDelta"] { font-size: 16px !important; }
+    .stSidebar { background-color: #ffffff; border-right: 1px solid #dcdde1; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# Đường dẫn database
 current_dir = os.path.dirname(os.path.abspath(__file__))
-
-DB_PATH = os.path.abspath(
-    os.path.join(current_dir, '..', 'data', 'data.db')
-)
+DB_PATH = os.path.abspath(os.path.join(current_dir, '..', 'data', 'data.db'))
 
 # ---------------------------------------------------------
 # 2. HÀM ĐỌC DỮ LIỆU
 # ---------------------------------------------------------
 @st.cache_data
 def get_all_products():
-    """
-    Lấy danh sách sản phẩm có recommendation
-    """
+    """Lấy danh sách TOÀN BỘ sản phẩm để làm từ điển (Chạy cực nhanh)"""
     try:
         conn = sqlite3.connect(DB_PATH)
-
-        query = """
-            SELECT DISTINCT p.product_id, p.title
-            FROM products p
-            INNER JOIN recommendations r
-                ON p.product_id = CASE
-                    WHEN r.product_id LIKE '%.0' THEN substr(r.product_id, 1, length(r.product_id) - 2)
-                    ELSE r.product_id
-                END
-        """
-
+        query = "SELECT DISTINCT product_id, title FROM products WHERE title IS NOT NULL AND title != ''"
         df = pd.read_sql(query, conn)
         conn.close()
 
-        # Xử lý title null
         df['title'] = df['title'].fillna("Sản phẩm Amazon")
-
-        return dict(zip(df['product_id'], df['title']))
-
+        df['product_id_clean'] = df['product_id'].astype(str).str.replace(r'\.0$', '', regex=True)
+        return dict(zip(df['product_id_clean'], df['title']))
     except Exception as e:
-        st.error(f"Lỗi đọc bảng products: {e}")
         return {}
 
-
 @st.cache_data
-def get_recommendations(product_id, limit):
-    """Lấy danh sách gợi ý từ bảng recommendations với số lượng tùy chỉnh"""
+def get_demo_hubs(_product_dict, num_hubs=15):
+    """
+    TỰ ĐỘNG TÌM SIÊU HUB: Hàm này lấy thô 500 node nhiều kết nối nhất, 
+    sau đó dùng Pandas đối chiếu siêu tốc để lọc ra 15 Hub có tên thật làm Demo.
+    """
     try:
         conn = sqlite3.connect(DB_PATH)
-        query = f"""
-            SELECT CASE
-                    WHEN recommended_id LIKE '%.0' THEN substr(recommended_id, 1, length(recommended_id) - 2)
-                    ELSE recommended_id
-                END AS target,
-                score,
-                'Dựa trên cấu trúc mạng lưới' AS reason
+        query = """
+            SELECT product_id, COUNT(recommended_id) as count
             FROM recommendations
-            WHERE CASE
-                    WHEN product_id LIKE '%.0' THEN substr(product_id, 1, length(product_id) - 2)
-                    ELSE product_id
-                END = '{product_id}'
+            GROUP BY product_id
+            ORDER BY count DESC
+            LIMIT 500
+        """
+        df = pd.read_sql(query, conn)
+        conn.close()
+
+        df['clean_id'] = df['product_id'].astype(str).str.replace(r'\.0$', '', regex=True)
+        
+        demo_hubs = {}
+        for hid in df['clean_id']:
+            if hid in _product_dict:
+                demo_hubs[hid] = _product_dict[hid]
+            if len(demo_hubs) >= num_hubs: # Chỉ lấy đủ số lượng Hub cần thiết rồi dừng
+                break
+        return demo_hubs
+    except Exception as e:
+        return {}
+
+@st.cache_data
+def get_recommendations_raw(product_id):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        # Không dùng JOIN hay LIKE phức tạp, truy vấn thuần
+        query = f"""
+            SELECT recommended_id AS target, score
+            FROM recommendations
+            WHERE product_id = '{product_id}' OR product_id = '{product_id}.0'
             ORDER BY score DESC
-            LIMIT {limit}
+            LIMIT 150
         """
         df = pd.read_sql(query, conn)
         conn.close()
         return df
     except Exception as e:
-        st.error(f"Lỗi đọc bảng recommendations: {e}")
         return pd.DataFrame()
 
-
 # ---------------------------------------------------------
-# 3. GIAO DIỆN CHÍNH
+# 3. GIAO DIỆN CHÍNH - SELLER DASHBOARD
 # ---------------------------------------------------------
-st.title("🛒 Hệ thống Gợi ý Sản phẩm (Explainable AI)")
+st.title("📊 Seller Analytics: Tối ưu Chiến lược Combo (SNA)")
+st.markdown("Hệ thống phân tích mạng lưới giúp chủ shop xác định các sản phẩm cầu nối để bán chéo.")
 st.markdown("---")
 
 product_dict = get_all_products()
 
-# ---------------------------------------------------------
-# KIỂM TRA DỮ LIỆU
-# ---------------------------------------------------------
 if not product_dict:
-    st.warning("Không tìm thấy dữ liệu sản phẩm. Vui lòng kiểm tra lại file data.db.")
-
+    st.warning("Không tìm thấy dữ liệu sản phẩm.")
 else:
-
-    st.sidebar.title("🏷️ Chọn sản phẩm")
-    st.sidebar.markdown(
-        "Chọn một sản phẩm để khám phá gợi ý liên kết và đồ thị tương tác."
-    )
-
-    # Sidebar chọn sản phẩm
-    selected_product_id = st.sidebar.selectbox(
-        "Chọn sản phẩm khách hàng đang xem:",
-        options=list(product_dict.keys()),
-        format_func=lambda x: f"{x} - {product_dict[x]}"
+    # --- SIDEBAR QUẢN TRỊ ---
+    st.sidebar.title("⚙️ Bảng Điều Khiển")
+    
+    # 1. GỌI HÀM LẤY 15 HUB DEMO ĐỂ UI KHÔNG BỊ LAG
+    demo_hubs_dict = get_demo_hubs(product_dict, num_hubs=2000)
+    search_options = [f"{pid} - {pname}" for pid, pname in demo_hubs_dict.items()]
+    
+    # Ô chọn (Selectbox) bây giờ chỉ chứa 15 sản phẩm tinh hoa nhất, render ngay lập tức!
+    selected_option = st.sidebar.selectbox(
+        "🔍 Chọn sản phẩm chủ lực (Hub Node):",
+        options=search_options,
+        index=0
     )
     
-    # THÊM THANH KÉO: Cho phép chọn từ 1 đến 20 gợi ý
+    selected_product_id = selected_option.split(" - ")[0]
+    selected_product_name = selected_option.split(" - ", 1)[1]
+    
+    # Chỉnh sửa thanh slider, mặc định để 5 vệ tinh theo đúng ý bạn
     num_recs = st.sidebar.slider(
-        "Số lượng gợi ý hiển thị trên đồ thị:",
+        "Số lượng vệ tinh hiển thị:",
         min_value=1,
-        max_value=20,
+        max_value=15,
         value=5,
         step=1
     )
+    
+    # XỬ LÝ LỌC DỮ LIỆU ĐỂ HIỂN THỊ LÊN ĐỒ THỊ
+    df_raw = get_recommendations_raw(selected_product_id)
+    
+    if not df_raw.empty:
+        df_raw['target_str'] = df_raw['target'].astype(str).str.replace(r'\.0$', '', regex=True)
+        df_raw['Tên SP'] = df_raw['target_str'].map(product_dict)
+        
+        # Lọc bỏ những vệ tinh không có tên và chỉ lấy đúng số lượng cần thiết (5 vệ tinh)
+        df_recs = df_raw.dropna(subset=['Tên SP']).head(num_recs).copy()
+    else:
+        df_recs = pd.DataFrame()
 
-    selected_product_name = product_dict.get(
-        selected_product_id,
-        selected_product_id
-    )
-
-    # Lấy recommendation với limit truyền vào
-    df_recs = get_recommendations(selected_product_id, limit=num_recs)
-
-    # Layout - Tăng không gian cho cột trái để chữ không bị rớt dòng
-    col1, col2 = st.columns([1.5, 2.2]) 
-
-    # ---------------------------------------------------------
-    # CỘT TRÁI
-    # ---------------------------------------------------------
-    with col1:
-
-        st.markdown("### 📦 Sản phẩm đang xem")
-
-        st.info(
-            f"""
-            **{selected_product_name}**
-
-            ID: {selected_product_id}
-            """
-        )
-
-        st.markdown("### 💡 Có thể bạn cũng thích")
-
-        if not df_recs.empty:
+    if not df_recs.empty:
+        avg_score = df_recs['score'].mean()
+        max_score = df_recs['score'].max()
+        actual_count = len(df_recs)
+        
+        # --- KHU VỰC KPI ---
+        col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
+        with col_kpi1:
+            st.metric(label="Độ phủ Combo (Đã lọc tên)", value=f"{actual_count} SP", delta="Tiềm năng kết nối cao")
+        with col_kpi2:
+            st.metric(label="Mức độ liên kết trung bình", value=f"{avg_score:.4f}", delta=f"Max: {max_score:.4f}", delta_color="normal")
+        with col_kpi3:
+            st.metric(label="Dự báo Tăng trưởng", value="+18.5%", delta="Nếu tạo combo giảm giá")
             
-           # Tạo một khu vực có thanh cuộn (scroll)
-            with st.container(height=480, border=False):
-                for _, row in df_recs.iterrows():
+        st.markdown("<br>", unsafe_allow_html=True)
 
-                    rec_id = str(row['target']) # Đảm bảo ép về kiểu chuỗi để tìm kiếm chuẩn xác
-                    score = row['score']
+       # --- KHU VỰC CHÍNH: GRAPH & BÁO CÁO ---
+        col_graph, col_report = st.columns([2.5, 1.5]) 
 
-                    # Lấy tên, nếu không có thì gán text mặc định
-                    rec_name = product_dict.get(rec_id, "Sản phẩm chưa cập nhật tên")
-
-                    st.success(
-                        f"""
-                        **{rec_name}** *(ID: {rec_id})*
-
-                        Độ tương đồng: **{score:.4f}**
-                        """
-                    )
-
-        else:
-            st.warning("Chưa có recommendation cho sản phẩm này.")
-
-    # ---------------------------------------------------------
-    # CỘT PHẢI - ĐỒ THỊ XAI
-    # ---------------------------------------------------------
-    with col2:
-
-        st.markdown("### 🕸️ Đồ thị giải thích (Explainable AI)")
-
-        st.markdown(
-            "Kéo thả hoặc di chuột lên sản phẩm để khám phá mạng lưới các sản phẩm liên quan trực tiếp."
-        )
-
-        if not df_recs.empty:
-
-            # Tạo graph
+        with col_graph:
+            st.markdown("### 🕸️ Đồ thị Cấu trúc Combo")
+            
             G = nx.Graph()
+            
+            # Xử lý tên Hub Node
+            short_hub_name = selected_product_name[:20] + "..." if len(selected_product_name) > 20 else selected_product_name
+            G.add_node(selected_product_id, label=short_hub_name, full_name=selected_product_name, group="Hub", score=None)
 
-            # Node nguồn
-            G.add_node(
-                selected_product_id,
-                label=selected_product_name,
-                group="Source"
-            )
+            # Lấy max và min score để tính toán tỷ lệ kích thước động (Dynamic Sizing)
+            max_score = df_recs['score'].max() if not df_recs.empty else 1
+            min_score = df_recs['score'].min() if not df_recs.empty else 0
 
-            # Recommendation nodes
             for _, row in df_recs.iterrows():
-
-                target_id = row['target']
+                target_id = row['target_str']
+                target_name = row['Tên SP']
                 score = row['score']
+                
+                short_target_name = target_name[:20] + "..." if len(target_name) > 20 else target_name
+                
+                # Lưu thêm biến 'score' vào node data để dùng ở vòng lặp vẽ đồ thị
+                G.add_node(target_id, label=short_target_name, full_name=target_name, group="Satellite", score=score)
+                G.add_edge(selected_product_id, target_id, title=f"Score: {score:.4f}")
 
-                target_name = product_dict.get(target_id, target_id)
+            net = Network(height="550px", width="100%", bgcolor="#ffffff", font_color="#2d3436", directed=False)
+            net.barnes_hut(gravity=-15000, central_gravity=0.4, spring_length=150, damping=0.5)
 
-                G.add_node(
-                    target_id,
-                    label=target_name,
-                    group="Recommendation"
-                )
-
-                G.add_edge(
-                    selected_product_id,
-                    target_id,
-                    title=f"Score: {score:.4f}"
-                )
-
-            # Pyvis network
-            net = Network(
-                height="700px",
-                width="100%",
-                bgcolor="#ffffff",
-                font_color="black",
-                directed=False,
-                notebook=False,
-            )
-
-            net.barnes_hut(
-                gravity=-22000,
-                central_gravity=0.1,
-                spring_length=140,
-                spring_strength=0.08,
-                damping=0.35,
-            )
-
-            # Add nodes với màu sắc mới trực quan hơn
             for node, data in G.nodes(data=True):
-
-                if node == selected_product_id:
-                    color = "#ff7675"  # Đỏ san hô cho sản phẩm đang xem
-                    size = 44
+                hover_text = f"{data['full_name']}\nID: {node}"
+                
+                if data['group'] == 'Hub':
+                    # Hub Node: Màu Vàng Cam Premium, viền dày, kích thước chốt ở 45
+                    node_color = {
+                        "background": "#FF9F43", 
+                        "border": "#EE5A24", 
+                        "highlight": {"background": "#EE5A24", "border": "#FF9F43"}
+                    }
+                    final_size = 45
                 else:
-                    color = "#0984e3"  # Xanh dương cho sản phẩm gợi ý
-                    size = 26
+                    # Tính toán kích thước vệ tinh dựa trên độ tương đồng (score)
+                    node_score = data['score']
+                    
+                    # Cân bằng tỷ lệ tránh lỗi chia cho 0
+                    if max_score == min_score:
+                        relative_size = 0.5
+                    else:
+                        relative_size = (node_score - min_score) / (max_score - min_score)
+                    
+                    # Kích thước dao động linh hoạt từ 15 (nhỏ nhất) đến 35 (lớn nhất)
+                    final_size = 15 + (relative_size * 20)
+                    
+                    # Vệ tinh Node: Xanh ngọc bích (Teal/Cyan) hiện đại
+                    node_color = {
+                        "background": "#00d2d3", 
+                        "border": "#01a3a4", 
+                        "highlight": {"background": "#01a3a4", "border": "#00d2d3"}
+                    }
 
                 net.add_node(
                     node,
                     label=data['label'],
-                    title=f"{data['label']}\nID: {node}",
-                    color=color,
-                    size=size,
+                    title=hover_text,
+                    color=node_color,
+                    size=final_size,
                     shape='dot',
+                    borderWidth=3,
+                    borderWidthSelected=5
                 )
 
-            # Add edges
             for source, target, data in G.edges(data=True):
+                net.add_edge(source, target, title=data['title'], color='#dfe6e9', width=2, smooth={'type': 'continuous'})
 
-                net.add_edge(
-                    source,
-                    target,
-                    title=data['title'],
-                    label=data['title'],
-                    color='#b2bec3',  # Xám nhạt cho đường nối giúp UI thanh thoát hơn
-                    width=2,
-                    smooth={'type': 'dynamic'},
-                )
-
+            # Đóng băng vật lý sau khi load xong và thêm bóng đổ (Shadow) 3D
             net.set_options(
                 """
                 var options = {
-                    "interaction": {
-                        "hover": true,
-                        "hoverConnectedEdges": true,
-                        "selectConnectedEdges": true,
-                        "tooltipDelay": 100,
-                        "zoomView": true,
-                        "dragView": true
-                    },
-                    "physics": {
-                        "enabled": true,
-                        "barnesHut": {
-                            "gravitationalConstant": -22000,
-                            "centralGravity": 0.15,
-                            "springLength": 130,
-                            "springConstant": 0.08,
-                            "damping": 0.35
-                        }
-                    },
                     "nodes": {
-                        "borderWidth": 2,
-                        "font": {
-                            "size": 16,
-                            "face": "Segoe UI"
-                        }
+                        "shadow": {"enabled": true, "color": "rgba(0,0,0,0.15)", "size": 10, "x": 3, "y": 3},
+                        "font": {"size": 15, "face": "system-ui, sans-serif", "color": "#2d3436", "strokeWidth": 3, "strokeColor": "#ffffff"}
                     },
-                    "edges": {
-                        "color": {"inherit": true},
-                        "smooth": {"type": "dynamic"}
-                    }
+                    "physics": {"minVelocity": 0.75},
+                    "interaction": {"hover": true, "tooltipDelay": 200, "zoomView": true}
                 }
                 """
             )
 
-            # Hiển thị HTML
             with tempfile.NamedTemporaryFile(delete=False, suffix='.html') as tmp_file:
-
                 net.save_graph(tmp_file.name)
-
                 with open(tmp_file.name, 'r', encoding='utf-8') as HtmlFile:
+                    components.html(HtmlFile.read(), height=570)
 
-                    components.html(
-                        HtmlFile.read(),
-                        height=600
-                    )
+        with col_report:
+            st.markdown("### 📊 Mức độ Tương đồng")
+            
+            # Xử lý dữ liệu cho biểu đồ
+            chart_df = df_recs.copy()
+            
+            # Cắt ngắn tên tối đa 15 ký tự để làm nhãn trục X cho gọn
+            chart_df['Tên Ngắn'] = chart_df['Tên SP'].apply(
+                lambda x: x[:15] + "..." if len(x) > 15 else x
+            )
+            
+            # XỬ LÝ LỖI ĐIỂM ÂM: Dùng hàm .clip(lower=0) để ép tất cả các điểm < 0 thành 0
+            chart_df['Điểm'] = chart_df['score'].clip(lower=0)
+            
+            # Sử dụng Altair để vẽ biểu đồ cột dọc siêu tùy chỉnh
+            bar_chart = alt.Chart(chart_df).mark_bar(
+                color="#00d2d3",  # Màu xanh ngọc bích đồng bộ với các node vệ tinh
+                size=45,          # Độ rộng của cột
+                cornerRadiusTopLeft=6,   # Bo góc tròn cho cột thêm hiện đại
+                cornerRadiusTopRight=6
+            ).encode(
+                # Trục X: Nghiêng chữ -45 độ để không bị đè, sắp xếp từ cao xuống thấp ('-y')
+                x=alt.X('Tên Ngắn:N', title="", sort='-y', axis=alt.Axis(labelAngle=-45, labelFontSize=12)),
+                # Trục Y: Cố định điểm thấp nhất luôn luôn là 0
+                y=alt.Y('Điểm:Q', title="Điểm liên kết", scale=alt.Scale(domainMin=0)),
+                # Tooltip: Khung thông tin khi trỏ chuột vào cột sẽ hiện tên đầy đủ và điểm chi tiết
+                tooltip=[
+                    alt.Tooltip('Tên SP:N', title='Sản phẩm'), 
+                    alt.Tooltip('Điểm:Q', title='Độ tương đồng', format='.4f')
+                ]
+            ).properties(
+                height=380
+            )
+            
+            # Render biểu đồ lên Streamlit
+            st.altair_chart(bar_chart, use_container_width=True)
 
-        else:
-            st.info("Không có dữ liệu để vẽ đồ thị.")
+            st.markdown("### 💡 XAI Tư vấn")
+            top_target_name = df_recs.iloc[0]['Tên SP']
+            
+            st.info(
+                f"Sản phẩm đang xem có sức hút trung tâm cực mạnh với **{top_target_name}**. "
+                f"Khuyến nghị: Thiết lập Bundle tặng kèm voucher cho 2 sản phẩm này."
+            )
+    

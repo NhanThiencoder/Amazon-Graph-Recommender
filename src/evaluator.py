@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple
 import math                          
 import networkx as nx                # thư viện xử lý đồ thị
-import community as community_louvain  
 from collections import defaultdict  
 
 Edge = Tuple[Any, Any]  # kiểu alias cho 1 cặp node (u, v)
